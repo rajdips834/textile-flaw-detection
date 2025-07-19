@@ -1,58 +1,75 @@
+# main.py
+
 import torch
 import argparse
-import os
-from data_loader import get_data_loaders
-from model import FabricDefectModel
-from train import train_model
-from evaluate import test
-from predict import predict_from_directory
 from config import batch_size, learning_rate, epochs
+from data_loader import get_data_loaders
+from model import SimpleCNN
+from trainer import train_model
+from evaluator import test
+from predictor import predict_from_directory
 
-def main(train_model_flag: bool):
-    dataset_path = "./dataset"  # Training dataset path
-    model_checkpoint_path = "fabric_defect_model_sgd.pth"
-    prediction_data_path = "./external_test_data"
+def get_device():
+    if torch.backends.mps.is_available():
+        print("Using Apple MPS (Metal) backend for GPU acceleration.")
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        print("Using CUDA GPU.")
+        return torch.device("cuda")
+    else:
+        print("Using CPU.")
+        return torch.device("cpu")
 
-    dataset, class_weights, train_loader, val_loader, test_loader = get_data_loaders(dataset_path, batch_size)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def main(train_flag: bool):
+    # Dataset path
+    dataset_path = "./dataset"
+    
+    # Load data
+    dataset, class_weights, train_loader, val_loader, test_loader = get_data_loaders(dataset_path)
+    device = get_device()
 
-    model = FabricDefectModel().to(device)
+    # Initialize model
+    model = SimpleCNN().to(device)
     class_weights = class_weights.to(device)
 
-    if train_model_flag or not os.path.exists(model_checkpoint_path):
+    # Train or load model
+    if train_flag:
         print("\nTraining with SGD Optimizer...")
         optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
-        train_model(model, train_loader, val_loader, optimizer, class_weights, device, epochs, "SGD")
+        train_model(model, train_loader, val_loader, optimizer, class_weights, device, epochs)
 
+        # Save model
         torch.save({
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'class_weights': class_weights,
             'class_to_idx': dataset.class_to_idx
-        }, model_checkpoint_path)
-
-        print("✅ Model saved to:", model_checkpoint_path)
+        }, 'fabric_defect_model_sgd.pth')
     else:
-        print("\n📦 Loading model from checkpoint...")
-        checkpoint = torch.load(model_checkpoint_path, map_location=device)
+        # Load pre-trained model
+        print("Loading saved model weights...")
+        checkpoint = torch.load('fabric_defect_model_sgd.pth', map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         class_weights = checkpoint['class_weights'].to(device)
-        print("✅ Model loaded.")
+        dataset.class_to_idx = checkpoint['class_to_idx']
 
-    print("\n🧪 Testing model...")
+    # Evaluate model
     test(model, test_loader, class_weights, device)
 
-    print("\n🔍 Predicting from external test directory...")
-    prediction = predict_from_directory(model, prediction_data_path, dataset.class_to_idx, device)
+    # Predict from external data
+    print("\nPredicting from external test images...")
+    predictions = predict_from_directory(model, "./external_test_data", dataset.class_to_idx, device)
 
-    if prediction:
-        print(f"\n🎯 Final prediction: {prediction}")
+    if predictions:
+        print("\nFinal Predictions:")
+        for file, pred in predictions:
+            print(f"{file}: {pred}")
     else:
-        print("\n⚠️ No prediction made.")
+        print("\nNo predictions made.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fabric Defect Classifier")
-    parser.add_argument('--train', action='store_true', help="Train the model from scratch")
+    parser = argparse.ArgumentParser(description="Fabric Defect Classifier")        
+    parser.add_argument('--train', action='store_true', help="Train the model before testing")
     args = parser.parse_args()
 
-    main(args.train)
+    main(train_flag=args.train)
